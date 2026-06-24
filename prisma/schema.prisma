@@ -1,0 +1,34 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Email templates rendered and sent by the mail service.
+model emailTemplate {
+  id        Int      @id @default(autoincrement())
+  tid       String   @unique
+  subject   String
+  body      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("email_templates")
+}
+
+/// Record of a mail delivery triggered by an ecosystem event.
+model mailLog {
+  id          Int      @id @default(autoincrement())
+  userId      String
+  to          String
+  templateTid String
+  subject     String
+  status      String   @default("SENT")
+  createdAt   DateTime @default(now())
+
+  @@map("mail_logs")
+}

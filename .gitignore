@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+
+# Prisma custom client output (regenerated via `pnpm prisma generate`)
+generated/
+
+# env
+.env
+.env.local
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.tsbuildinfo
