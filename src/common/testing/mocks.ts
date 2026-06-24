@@ -28,7 +28,6 @@ function createModelMock(): ModelDelegate {
  */
 export function createMockPrisma() {
   const mock: Record<string, unknown> = {
-    emailTemplate: createModelMock(),
     mailLog: createModelMock(),
   };
 

@@ -1,100 +1,82 @@
+import { randomUUID } from 'node:crypto';
 import { jest } from '@jest/globals';
-import { createMockPrisma, createMockRedis } from '../common/testing/mocks.js';
+import { createMockPrisma } from '../common/testing/mocks.js';
 import { MailService } from './mail.service.js';
+import type { MailJobData } from '../queue/mail-queue.constants.js';
 
-function createMockTemplates() {
-  return {
-    findByTid: jest.fn(async () => ({
-      id: 1,
-      tid: 'course-purchased',
-      subject: 'Your course',
-      body: 'Thanks',
-      isActive: true,
-    })),
-  };
+function createMockProvider() {
+  return { send: jest.fn(async () => ({ id: 're_123' })) };
 }
 
 function createMockPublisher() {
   return { mailSent: jest.fn(async () => true) };
 }
 
-function createMockIdempotency() {
-  return { alreadyProcessed: jest.fn(async () => false) };
-}
-
-function amqpMsg(messageId?: string) {
-  return { properties: { messageId } } as any;
-}
-
-describe('MailService', () => {
-  let service: MailService;
+describe('MailService.deliver', () => {
   let db: ReturnType<typeof createMockPrisma>;
-  let cache: ReturnType<typeof createMockRedis>;
-  let templates: ReturnType<typeof createMockTemplates>;
+  let provider: ReturnType<typeof createMockProvider>;
   let publisher: ReturnType<typeof createMockPublisher>;
-  let idempotency: ReturnType<typeof createMockIdempotency>;
+  let service: MailService;
 
-  const event = {
+  const job: MailJobData = {
+    template: 'welcome',
+    to: 'user@example.com',
     userId: 'u-1',
-    email: 'u1@example.com',
-    courseId: 7,
-    courseTitle: 'Algebra',
-    purchasedAt: '2026-06-24T00:00:00.000Z',
+    eventId: randomUUID(),
+    props: { name: 'Andrey', verifyUrl: 'https://app.example.com/verify' },
   };
 
   beforeEach(() => {
     db = createMockPrisma();
-    cache = createMockRedis();
-    templates = createMockTemplates();
+    provider = createMockProvider();
     publisher = createMockPublisher();
-    idempotency = createMockIdempotency();
-    service = new MailService(
-      db as any,
-      cache as any,
-      templates as any,
-      publisher as any,
-      idempotency as any,
-    );
+    service = new MailService(provider as any, db as any, publisher as any);
   });
 
-  describe('onCoursePurchased', () => {
-    it('skips when the event was already processed', async () => {
-      idempotency.alreadyProcessed.mockResolvedValueOnce(true);
+  it('renders, sends via the provider and logs the delivery', async () => {
+    const result = await service.deliver(job);
 
-      await service.onCoursePurchased(event, amqpMsg('m-1'));
+    expect(result).toEqual({ id: 're_123' });
 
-      expect((db.mailLog as any).create).not.toHaveBeenCalled();
-      expect(publisher.mailSent).not.toHaveBeenCalled();
+    const sent = provider.send.mock.calls[0][0] as {
+      to: string;
+      subject: string;
+      html: string;
+    };
+    expect(sent.to).toBe('user@example.com');
+    expect(sent.subject).toMatch(/Welcome/);
+    expect(sent.html).toContain('Verify email');
+
+    expect((db.mailLog as any).create).toHaveBeenCalledWith({
+      data: {
+        userId: 'u-1',
+        to: 'user@example.com',
+        template: 'welcome',
+        eventId: job.eventId,
+        providerMessageId: 're_123',
+        status: 'SENT',
+      },
     });
-
-    it('logs delivery, publishes mail.sent and invalidates cache', async () => {
-      (db.mailLog as any).create.mockResolvedValueOnce({ id: 10 });
-
-      await service.onCoursePurchased(event, amqpMsg('m-2'));
-
-      expect(templates.findByTid).toHaveBeenCalledWith('course-purchased');
-      expect((db.mailLog as any).create).toHaveBeenCalledWith({
-        data: {
-          userId: 'u-1',
-          to: 'u1@example.com',
-          templateTid: 'course-purchased',
-          subject: 'Your course',
-        },
-      });
-      expect(publisher.mailSent).toHaveBeenCalledTimes(1);
-      expect(cache.del).toHaveBeenCalledWith('mail:all');
-      expect(cache.del).toHaveBeenCalledWith('mail:user-u-1');
-    });
+    expect(publisher.mailSent).toHaveBeenCalledTimes(1);
   });
 
-  describe('findForUser', () => {
-    it('returns cached value without hitting the db', async () => {
-      cache.get.mockResolvedValueOnce(JSON.stringify([{ id: 1 }]) as never);
-
-      const result = await service.findForUser('u-1');
-
-      expect(result).toEqual([{ id: 1 }]);
-      expect((db.mailLog as any).findMany).not.toHaveBeenCalled();
+  it('does not re-send when the event was already delivered', async () => {
+    (db.mailLog as any).findUnique.mockResolvedValueOnce({
+      status: 'SENT',
+      providerMessageId: 're_existing',
     });
+
+    const result = await service.deliver(job);
+
+    expect(result).toEqual({ id: 're_existing' });
+    expect(provider.send).not.toHaveBeenCalled();
+    expect((db.mailLog as any).create).not.toHaveBeenCalled();
+  });
+
+  it('propagates provider errors so the worker can retry', async () => {
+    provider.send.mockRejectedValueOnce(new Error('Resend 500') as never);
+
+    await expect(service.deliver(job)).rejects.toThrow('Resend 500');
+    expect((db.mailLog as any).create).not.toHaveBeenCalled();
   });
 });

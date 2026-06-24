@@ -1,126 +1,81 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import type { ConsumeMessage } from 'amqplib';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../modules/Prisma/prisma.service.js';
-import { RedisService } from '../modules/redis/redis.service.js';
 import { EventPublisher } from '../modules/messaging/event-publisher.service.js';
-import { IdempotencyService } from '../modules/messaging/idempotency.service.js';
 import {
-  EVENTS_DLX,
-  EVENTS_EXCHANGE,
-  RoutingKey,
-} from '../modules/messaging/messaging.constants.js';
-import type {
-  CoursePurchasedEvent,
-  SubscriptionChangedEvent,
-} from '../modules/messaging/messaging.constants.js';
-import { TemplateService } from '../template/template.service.js';
+  MAIL_PROVIDER,
+  type MailProvider,
+} from './providers/mail-provider.interface.js';
+import { renderTemplate, subjectFor } from './templates/render.js';
+import type { MailJobData } from '../queue/mail-queue.constants.js';
 
+/**
+ * Orchestrates a single delivery: render template → send via provider →
+ * persist a mail log → publish `mail.sent`. Provider failures propagate so the
+ * BullMQ worker retries them with backoff.
+ */
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private cacheKey = 'mail:';
-  private ttl = 3600;
 
   constructor(
-    private db: PrismaService,
-    private cache: RedisService,
-    private templates: TemplateService,
-    private publisher: EventPublisher,
-    private idempotency: IdempotencyService,
+    @Inject(MAIL_PROVIDER) private readonly provider: MailProvider,
+    private readonly db: PrismaService,
+    private readonly publisher: EventPublisher,
   ) {}
 
-  // ---- reads (cache-aside) ----
-
-  async findAll() {
-    const key = `${this.cacheKey}all`;
-    const cached = await this.cache.get(key);
-    if (cached) return JSON.parse(cached);
-
-    const data = await this.db.mailLog.findMany();
-    await this.cache.set(key, JSON.stringify(data), this.ttl);
-    return data;
-  }
-
-  async findById(id: number) {
-    const key = `${this.cacheKey}${id}`;
-    const cached = await this.cache.get(key);
-    if (cached) return JSON.parse(cached);
-
-    const log = await this.db.mailLog.findUnique({ where: { id } });
-    await this.cache.set(key, JSON.stringify(log), this.ttl);
-    return log;
-  }
-
-  async findForUser(userId: string) {
-    const key = `${this.cacheKey}user-${userId}`;
-    const cached = await this.cache.get(key);
-    if (cached) return JSON.parse(cached);
-
-    const data = await this.db.mailLog.findMany({ where: { userId } });
-    await this.cache.set(key, JSON.stringify(data), this.ttl);
-    return data;
-  }
-
-  // ---- consumers ----
-
-  @RabbitSubscribe({
-    exchange: EVENTS_EXCHANGE,
-    routingKey: RoutingKey.CoursePurchased,
-    queue: 'mail.delivery.course-purchased',
-    queueOptions: { durable: true, deadLetterExchange: EVENTS_DLX },
-  })
-  async onCoursePurchased(
-    event: CoursePurchasedEvent,
-    amqpMsg: ConsumeMessage,
-  ) {
-    if (await this.idempotency.alreadyProcessed(amqpMsg.properties.messageId)) {
-      return;
+  async deliver(data: MailJobData): Promise<{ id: string }> {
+    // Guard against a re-send if a job retries after the provider already
+    // accepted the message (e.g. a post-send step failed). The unique eventId
+    // on the mail log is our "already delivered" marker.
+    const existing = await this.db.mailLog.findUnique({
+      where: { eventId: data.eventId },
+    });
+    if (existing?.status === 'SENT') {
+      this.logger.log(
+        `Mail for event ${data.eventId} already sent — skipping re-send`,
+      );
+      return { id: existing.providerMessageId ?? '' };
     }
-    await this.deliver(event.userId, event.email, 'course-purchased');
-  }
 
-  @RabbitSubscribe({
-    exchange: EVENTS_EXCHANGE,
-    routingKey: RoutingKey.SubscriptionChanged,
-    queue: 'mail.delivery.subscription-changed',
-    queueOptions: { durable: true, deadLetterExchange: EVENTS_DLX },
-  })
-  async onSubscriptionChanged(
-    event: SubscriptionChangedEvent,
-    amqpMsg: ConsumeMessage,
-  ) {
-    if (await this.idempotency.alreadyProcessed(amqpMsg.properties.messageId)) {
-      return;
-    }
-    await this.deliver(event.userId, event.email, 'subscription-changed');
-  }
+    const html = await renderTemplate(data.template, data.props);
+    const subject = subjectFor(data.template);
 
-  // ---- delivery ----
-
-  private async deliver(userId: string, to: string, templateTid: string) {
-    const template = await this.templates.findByTid(templateTid);
-
-    const log = await this.db.mailLog.create({
-      data: { userId, to, templateTid, subject: template.subject },
+    const { id: providerMessageId } = await this.provider.send({
+      to: data.to,
+      subject,
+      html,
     });
 
-    // TODO: actual SMTP/provider send goes here.
-    this.logger.log(`Sent "${templateTid}" to ${to} (user ${userId})`);
+    await this.db.mailLog.create({
+      data: {
+        userId: data.userId,
+        to: data.to,
+        template: data.template,
+        eventId: data.eventId,
+        providerMessageId,
+        status: 'SENT',
+      },
+    });
+
+    this.logger.log(
+      JSON.stringify({
+        msg: 'mail.sent',
+        eventId: data.eventId,
+        template: data.template,
+        to: data.to,
+        providerMessageId,
+        status: 'SENT',
+      }),
+    );
 
     await this.publisher.mailSent({
-      userId,
-      to,
-      templateTid,
+      userId: data.userId,
+      to: data.to,
+      template: data.template,
+      providerMessageId,
       sentAt: new Date().toISOString(),
     });
 
-    await this.invalidate(userId);
-    return log;
-  }
-
-  private async invalidate(userId: string) {
-    await this.cache.del(`${this.cacheKey}all`);
-    await this.cache.del(`${this.cacheKey}user-${userId}`);
+    return { id: providerMessageId };
   }
 }

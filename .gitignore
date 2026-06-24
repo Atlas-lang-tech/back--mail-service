@@ -9,6 +9,9 @@ generated/
 .env
 .env.local
 
+# vue-email static export output
+.preview/
+
 # logs
 *.log
 npm-debug.log*

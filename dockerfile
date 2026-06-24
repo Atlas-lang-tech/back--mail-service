@@ -26,6 +26,9 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/generated ./generated
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
+# vue-email `.vue` templates are compiled from disk at runtime (not bundled into
+# dist), so ship them next to the source path render.ts resolves by default.
+COPY --from=build /app/src/mail/templates ./src/mail/templates
 
 EXPOSE 3000
 

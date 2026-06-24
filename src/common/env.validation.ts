@@ -1,5 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import {
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -34,6 +35,37 @@ export class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   RABBITMQ_URL: string;
+
+  // ---- mail provider ----
+
+  @IsString()
+  @IsNotEmpty()
+  RESEND_API_KEY: string;
+
+  @IsString()
+  @IsNotEmpty()
+  MAIL_FROM: string;
+
+  @IsOptional()
+  @IsIn(['resend'])
+  MAIL_PROVIDER?: string;
+
+  // Base URL of the front-end, used to build verification / reset links.
+  @IsString()
+  @IsNotEmpty()
+  APP_BASE_URL: string;
+
+  // ---- worker rate limiting (optional, sensible defaults in code) ----
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  MAIL_RATE_MAX?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  MAIL_RATE_DURATION?: number;
 }
 
 export function validate(config: Record<string, unknown>) {

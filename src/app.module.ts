@@ -1,11 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { validate } from './common/env.validation.js';
+import { HealthController } from './common/health/health.controller.js';
 import { PrismaModule } from './modules/Prisma/prisma.module.js';
 import { RedisModule } from './modules/redis/redis.module.js';
 import { MessagingModule } from './modules/messaging/messaging.module.js';
+import { QueueModule } from './queue/queue.module.js';
 import { MailModule } from './mail/mail.module.js';
-import { TemplateModule } from './template/template.module.js';
 
 @Module({
   imports: [
@@ -13,8 +14,9 @@ import { TemplateModule } from './template/template.module.js';
     PrismaModule,
     RedisModule,
     MessagingModule,
-    TemplateModule,
+    QueueModule,
     MailModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}
