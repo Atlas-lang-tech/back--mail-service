@@ -40,7 +40,7 @@ describe('MailEventsConsumer', () => {
       eventId,
       props: {
         name: 'Andrey',
-        verifyUrl: 'https://app.example.com/verify-email?token=verify-tok',
+        verifyUrl: 'https://app.example.com/auth/verify-email?token=verify-tok',
       },
     });
   });

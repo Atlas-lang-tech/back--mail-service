@@ -43,7 +43,7 @@ export class MailEventsConsumer {
   })
   async onUserRegistered(payload: unknown): Promise<void> {
     const dto = await this.validate(UserRegisteredDto, payload);
-    const verifyUrl = `${this.baseUrl()}/verify-email?token=${encodeURIComponent(dto.verificationToken)}`;
+    const verifyUrl = `${this.baseUrl()}/auth/verify-email?token=${encodeURIComponent(dto.verificationToken)}`;
     await this.dispatch(dto.eventId, {
       template: 'welcome',
       to: dto.email,
@@ -62,7 +62,7 @@ export class MailEventsConsumer {
   })
   async onPasswordResetRequested(payload: unknown): Promise<void> {
     const dto = await this.validate(PasswordResetRequestedDto, payload);
-    const resetUrl = `${this.baseUrl()}/reset-password?token=${encodeURIComponent(dto.resetToken)}`;
+    const resetUrl = `${this.baseUrl()}/auth/reset-password?token=${encodeURIComponent(dto.resetToken)}`;
     await this.dispatch(dto.eventId, {
       template: 'password-reset',
       to: dto.email,
